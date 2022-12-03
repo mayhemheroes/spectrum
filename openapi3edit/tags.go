@@ -10,20 +10,29 @@ import (
 	"github.com/grokify/spectrum/openapi3"
 )
 
-func SpecTagsModifyMore(spec *openapi3.Spec, opts *TagsModifyOpts) {
+func (se *SpecEdit) TagsModifyMore(opts *TagsModifyOpts) {
 	if opts == nil {
 		return
 	}
+	if se.SpecMore.Spec == nil {
+		return
+	}
 	if len(opts.TagsMap) > 0 {
-		SpecTagsModify(spec, opts.TagsMap)
+		//se := SpecEdit{}
+		//se.SpecSet(se.SpecMore.Spec)
+		se.TagsModify(opts.TagsMap)
 	}
 	if len(opts.TagURLsMap) > 0 {
-		openapi3.VisitOperations(spec, opts.ModifyTagsOperationFunc)
+		openapi3.VisitOperations(se.SpecMore.Spec, opts.ModifyTagsOperationFunc)
 	}
 }
 
-// SpecTagsModify renames tags using mapping of old tags to new tags.
-func SpecTagsModify(spec *openapi3.Spec, mapTagsOldToNew map[string]string) {
+// TagsModify renames tags using mapping of old tags to new tags.
+func (se *SpecEdit) TagsModify(mapTagsOldToNew map[string]string) {
+	spec := se.SpecMore.Spec
+	if spec == nil {
+		return
+	}
 	changeTags := map[string]string{}
 	for old, new := range mapTagsOldToNew {
 		changeTags[strings.TrimSpace(old)] = strings.TrimSpace(new)
@@ -139,10 +148,10 @@ type TagsModifyOpts struct {
 	TagsMap map[string]string
 	// TagGroupsSet is a tag group set which can be added using Redocly's `x-tagGroups` property
 	// as `spec.Extensions["x-tagGroups"] = opts.TagGroupsSet.TagGroups``
-	TagGroupsSet openapi3.TagGroupSet
+	// TagGroupsSet openapi3.TagGroupSet
 }
 
-// ModifyTagsOperationFunc satsifies the function signature used in `openapi3.VisitOperations`.`
+// ModifyTagsOperationFunc satisfies the function signature used in `openapi3.VisitOperations`.`
 func (tmo *TagsModifyOpts) ModifyTagsOperationFunc(path, method string, op *oas3.Operation) {
 	if op == nil {
 		return

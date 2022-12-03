@@ -3,10 +3,10 @@ package openapi3
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,10 +15,15 @@ import (
 	"github.com/grokify/gocharts/v2/data/table"
 	"github.com/grokify/gocharts/v2/data/table/tabulator"
 	"github.com/grokify/mogo/encoding/jsonutil"
+	"github.com/grokify/mogo/net/http/pathmethod"
 	"github.com/grokify/mogo/net/httputilmore"
 	"github.com/grokify/mogo/net/urlutil"
 	"github.com/grokify/mogo/type/stringsutil"
+	"golang.org/x/exp/slices"
+	"sigs.k8s.io/yaml"
 )
+
+var ErrSpecNotSet = errors.New("spec not set")
 
 type Spec = oas3.T
 
@@ -36,6 +41,18 @@ func ReadSpecMore(path string, validate bool) (*SpecMore, error) {
 	return &SpecMore{Spec: spec}, nil
 }
 
+func (sm *SpecMore) Clone() (*Spec, error) {
+	if sm.Spec == nil {
+		return nil, nil
+	}
+	bytes, err := sm.Spec.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	loader := oas3.NewLoader()
+	return loader.LoadFromData(bytes)
+}
+
 func (sm *SpecMore) SchemasCount() int {
 	if sm.Spec == nil {
 		return -1
@@ -45,23 +62,22 @@ func (sm *SpecMore) SchemasCount() int {
 	return len(sm.Spec.Components.Schemas)
 }
 
-func (sm *SpecMore) OperationsTable(columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool) (*table.Table, error) {
-	return operationsTable(sm.Spec, columns, filterFunc)
+func (sm *SpecMore) OperationsTable(columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool, addlColFuncs *OperationMoreStringFuncMap) (*table.Table, error) {
+	return operationsTable(sm.Spec, columns, filterFunc, addlColFuncs)
 }
 
-func operationsTable(spec *Spec, columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool) (*table.Table, error) {
+func operationsTable(spec *Spec, columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool, addlColFuncs *OperationMoreStringFuncMap) (*table.Table, error) {
 	if columns == nil {
 		columns = OpTableColumnsDefault(false)
 	}
 	tbl := table.NewTable(spec.Info.Title)
 	tbl.Columns = columns.DisplayTexts()
 
-	specMore := SpecMore{Spec: spec}
-
-	tgs, err := specMore.TagGroups()
-	if err != nil {
-		return nil, err
-	}
+	// specMore := SpecMore{Spec: spec}
+	// tgs, err := specMore.TagGroups()
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	VisitOperations(spec, func(path, method string, op *oas3.Operation) {
 		if filterFunc != nil &&
@@ -82,11 +98,12 @@ func operationsTable(spec *Spec, columns *tabulator.ColumnSet, filterFunc func(p
 				row = append(row, op.OperationID)
 			case "summary":
 				row = append(row, op.Summary)
-			case XTagGroups:
-				row = append(row, strings.Join(
-					tgs.GetTagGroupNamesForTagNames(op.Tags...), ", "))
+			// case XTagGroups:
+			//	row = append(row, strings.Join(
+			//		tgs.GetTagGroupNamesForTagNames(op.Tags...), ", "))
 			case "securityScopes":
-				row = append(row, strings.Join(OperationSecurityScopes(op, false), ", "))
+				om := OperationMore{Operation: op}
+				row = append(row, strings.Join(om.SecurityScopes(false), ", "))
 			case XThrottlingGroup:
 				row = append(row, GetExtensionPropStringOrEmpty(op.ExtensionProps, XThrottlingGroup))
 			case "docsURL":
@@ -94,6 +111,17 @@ func operationsTable(spec *Spec, columns *tabulator.ColumnSet, filterFunc func(p
 					row = append(row, op.ExternalDocs.URL)
 				}
 			default:
+				if addlColFuncs != nil {
+					colFunc := addlColFuncs.Func(text.Slug)
+					// for XTagGroups send OperationMoreStringFuncMap[XTagGroups] = tgs.
+					if colFunc != nil {
+						row = append(row, colFunc(&OperationMore{
+							Path:      path,
+							Method:    method,
+							Operation: op}))
+						continue
+					}
+				}
 				row = append(row, GetExtensionPropStringOrEmpty(op.ExtensionProps, text.Slug))
 			}
 		}
@@ -168,42 +196,75 @@ func OpTableColumnsRingCentral() *tabulator.ColumnSet {
 	//return &table.ColumnSet{Columns: columns}
 }
 
-func (sm *SpecMore) OperationMetas() []OperationMeta {
-	ometas := []OperationMeta{}
+func (sm *SpecMore) Operations(inclTags []string) *OperationMoreSet {
 	if sm.Spec == nil {
-		return ometas
+		return nil
 	}
+	// func QueryOperationsByTags(spec *openapi3.Spec, tags []string) *OperationEditSet {
+	tagsWantMatch := map[string]int{}
+	for _, tag := range inclTags {
+		tagsWantMatch[tag] = 1
+	}
+	opmSet := &OperationMoreSet{OperationMores: []OperationMore{}}
+
+	VisitOperations(sm.Spec, func(path, method string, op *oas3.Operation) {
+		if len(tagsWantMatch) == 0 {
+			opmSet.OperationMores = append(opmSet.OperationMores,
+				OperationMore{
+					Path:      path,
+					Method:    method,
+					Operation: op})
+			return
+		}
+		for _, opTagTry := range op.Tags {
+			if _, ok := tagsWantMatch[opTagTry]; ok {
+				opmSet.OperationMores = append(opmSet.OperationMores,
+					OperationMore{
+						Path:      path,
+						Method:    method,
+						Operation: op})
+				return
+			}
+		}
+	})
+
+	return opmSet
+}
+
+func (sm *SpecMore) OperationMetasMap(inclTags []string) map[string]OperationMeta {
+	oms := sm.OperationMetas(inclTags)
+	omsMap := map[string]OperationMeta{}
+	for _, om := range oms {
+		omsMap[om.PathMethod()] = om
+	}
+	return omsMap
+}
+
+func (sm *SpecMore) OperationMetas(inclTags []string) []OperationMeta {
+	if sm.Spec == nil {
+		return []OperationMeta{}
+	}
+	oms := []*OperationMeta{}
 	for url, path := range sm.Spec.Paths {
-		if path.Connect != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodConnect, path.Connect))
-		}
-		if path.Delete != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodDelete, path.Delete))
-		}
-		if path.Get != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodGet, path.Get))
-		}
-		if path.Head != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodHead, path.Head))
-		}
-		if path.Options != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodOptions, path.Options))
-		}
-		if path.Patch != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodPatch, path.Patch))
-		}
-		if path.Post != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodPost, path.Post))
-		}
-		if path.Put != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodPut, path.Put))
-		}
-		if path.Trace != nil {
-			ometas = append(ometas, OperationToMeta(url, http.MethodTrace, path.Trace))
-		}
+		oms = append(oms,
+			OperationToMeta(url, http.MethodConnect, path.Connect, inclTags),
+			OperationToMeta(url, http.MethodDelete, path.Delete, inclTags),
+			OperationToMeta(url, http.MethodGet, path.Get, inclTags),
+			OperationToMeta(url, http.MethodHead, path.Head, inclTags),
+			OperationToMeta(url, http.MethodOptions, path.Options, inclTags),
+			OperationToMeta(url, http.MethodPatch, path.Patch, inclTags),
+			OperationToMeta(url, http.MethodPost, path.Post, inclTags),
+			OperationToMeta(url, http.MethodPut, path.Put, inclTags),
+			OperationToMeta(url, http.MethodTrace, path.Trace, inclTags))
 	}
 
-	return ometas
+	oms2 := []OperationMeta{}
+	for _, om := range oms {
+		if om != nil {
+			oms2 = append(oms2, *om)
+		}
+	}
+	return oms2
 }
 
 func (sm *SpecMore) OperationsCount() int {
@@ -253,7 +314,7 @@ func (sm *SpecMore) OperationIDsLocations() map[string][]string {
 		if op == nil {
 			return
 		}
-		pathMethod := PathMethod(opPath, opMethod)
+		pathMethod := pathmethod.PathMethod(opPath, opMethod)
 		op.OperationID = strings.TrimSpace(op.OperationID)
 		vals[op.OperationID] = append(vals[op.OperationID], pathMethod)
 	})
@@ -335,6 +396,41 @@ func (sm *SpecMore) SetOperation(path, method string, op *oas3.Operation) {
 	sm.Spec.Paths[path] = pathItem
 }
 
+// Ontology returns a populated `Ontology` struct for the spec. If no spec
+// is supplied, a zero value is returned.
+func (sm *SpecMore) Ontology() Ontology {
+	return Ontology{
+		Operations:  sm.OperationMetasMap([]string{}),
+		Parameters:  sm.Spec.Components.Parameters,
+		SchemaNames: sm.SchemaNames()}
+}
+
+// ParameterNames returns a `map[string][]string` where they key is the
+// key in `#/components/parameters` and the values are both references
+// and names. There should only be either a reference or a name but this
+// structure allows capture of both.
+func (sm *SpecMore) ParameterNames() map[string][]string {
+	mss := map[string][]string{}
+	if sm.Spec == nil {
+		return mss
+	}
+	for paramKey, paramRef := range sm.Spec.Components.Parameters {
+		if _, ok := mss[paramKey]; !ok {
+			mss[paramKey] = []string{}
+		}
+		if len(paramRef.Ref) > 0 {
+			mss[paramKey] = append(mss[paramKey], paramRef.Ref)
+		}
+		if paramRef.Value == nil {
+			continue
+		}
+		if len(paramRef.Value.Name) > 0 {
+			mss[paramKey] = append(mss[paramKey], paramRef.Value.Name)
+		}
+	}
+	return mss
+}
+
 func (sm *SpecMore) SchemaNames() []string {
 	schemaNames := []string{}
 	for schemaName := range sm.Spec.Components.Schemas {
@@ -396,16 +492,32 @@ func (sm *SpecMore) SchemaNameExists(schemaName string, includeNil bool) bool {
 	return false
 }
 
+// SchemaRef returns a top level `SchemaRef` under `Components` based on
+// map name or JSON pointer. It returns `nil` if the `schemaName` is not
+// found.
 func (sm *SpecMore) SchemaRef(schemaName string) *oas3.SchemaRef {
-	for schemaNameTry, schemaRef := range sm.Spec.Components.Schemas {
-		if schemaName == schemaNameTry {
-			return schemaRef
+	if sm.Spec == nil {
+		return nil
+	}
+	if strings.Contains(schemaName, PointerComponentsSchemas) {
+		ptr, err := ParseJSONPointer(schemaName)
+		if err != nil {
+			return nil
 		}
+		schNameTry, ok := ptr.IsTopSchema()
+		if !ok {
+			return nil
+		}
+		schemaName = schNameTry
+	}
+
+	if schRef, ok := sm.Spec.Components.Schemas[schemaName]; ok {
+		return schRef
 	}
 	return nil
 }
 
-func (sm *SpecMore) SetSchemaRef(schemaName string, schemaRef *oas3.SchemaRef) error {
+func (sm *SpecMore) SchemaRefSet(schemaName string, schemaRef *oas3.SchemaRef) error {
 	schemaName = strings.TrimSpace(schemaName)
 	if schemaRef != nil {
 		if sm.Spec.Components.Schemas == nil {
@@ -456,7 +568,7 @@ func (sm *SpecMore) OperationsDescriptionInfo() map[string][]string {
 		if op == nil {
 			return
 		}
-		pathMethod := PathMethod(opPath, opMethod)
+		pathMethod := pathmethod.PathMethod(opPath, opMethod)
 		op.Description = strings.TrimSpace(op.Description)
 		if len(op.Description) == 0 {
 			data["opWoutDesc"] = append(data["opWoutDesc"], pathMethod)
@@ -498,6 +610,16 @@ func (sm *SpecMore) Tags(inclTop, inclOps bool) []string {
 		tags = append(tags, tag)
 	}
 	return stringsutil.SliceCondenseSpace(tags, true, true)
+}
+
+// TagsValidate checks to see if the tag names in the Spec tags property
+// and operations match.
+func (sm *SpecMore) TagsValidate() bool {
+	spTags := sm.Tags(true, false)
+	opTags := sm.Tags(false, true)
+	sort.Strings(spTags)
+	sort.Strings(opTags)
+	return slices.Equal(spTags, opTags)
 }
 
 // TagsMap returns a set of operations with tags present in the current spec.
@@ -562,51 +684,65 @@ func (sm *SpecMore) MarshalJSON(prefix, indent string) ([]byte, error) {
 	if err != nil {
 		return bytes, err
 	}
-	pretty := false
+
 	if len(prefix) > 0 || len(indent) > 0 {
-		pretty = true
+		return jsonutil.IndentBytes(bytes, prefix, indent)
 	}
-	if pretty {
-		bytes = jsonutil.PrettyPrint(bytes, "", "  ")
-	}
+
 	return bytes, nil
 }
 
-func (sm *SpecMore) PrintJSON(prefix, indent string) error {
-	bytes, err := sm.MarshalJSON(prefix, indent)
-	if err != nil {
-		return err
+func (sm *SpecMore) MarshalYAML() ([]byte, error) {
+	if jbytes, err := sm.MarshalJSON("", ""); err != nil {
+		return []byte{}, err
+	} else {
+		return yaml.JSONToYAML(jbytes)
 	}
-	_, err = fmt.Println(string(bytes))
-	return err
 }
 
-func (sm *SpecMore) WriteFileCSV(filename string) error {
-	tbl, err := sm.OperationsTable(nil, nil)
-	if err != nil {
+func (sm *SpecMore) PrintJSON(prefix, indent string) error {
+	if bytes, err := sm.MarshalJSON(prefix, indent); err != nil {
+		return err
+	} else {
+		_, err = fmt.Println(string(bytes))
 		return err
 	}
-	return tbl.WriteCSV(filename)
+}
+
+func (sm *SpecMore) WriteFileCSV(filename string, addlColFuncs *OperationMoreStringFuncMap) error {
+	if tbl, err := sm.OperationsTable(nil, nil, addlColFuncs); err != nil {
+		return err
+	} else {
+		return tbl.WriteCSV(filename)
+	}
 }
 
 func (sm *SpecMore) WriteFileJSON(filename string, perm os.FileMode, prefix, indent string) error {
-	jsonData, err := sm.MarshalJSON(prefix, indent)
-	if err != nil {
+	if jsonData, err := sm.MarshalJSON(prefix, indent); err != nil {
 		return err
+	} else {
+		return os.WriteFile(filename, jsonData, perm)
 	}
-	return ioutil.WriteFile(filename, jsonData, perm)
 }
 
-func (sm *SpecMore) WriteFileXLSX(filename string, columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool) error {
+func (sm *SpecMore) WriteFileXLSX(filename string, columns *tabulator.ColumnSet, filterFunc func(path, method string, op *oas3.Operation) bool, addlColFuncs *OperationMoreStringFuncMap) error {
 	if columns == nil {
 		columns = OpTableColumnsDefault(true)
 	}
-	tbl, err := sm.OperationsTable(columns, filterFunc)
-	if err != nil {
+	if tbl, err := sm.OperationsTable(columns, filterFunc, addlColFuncs); err != nil {
 		return err
+	} else {
+		tbl.FormatAutoLink = true
+		return table.WriteXLSX(filename, tbl)
 	}
-	tbl.FormatAutoLink = true
-	return table.WriteXLSX(filename, tbl)
+}
+
+func (sm *SpecMore) WriteFileYAML(filename string, perm os.FileMode) error {
+	if ybytes, err := sm.MarshalYAML(); err != nil {
+		return err
+	} else {
+		return os.WriteFile(filename, ybytes, perm)
+	}
 }
 
 type TagsMore struct {
