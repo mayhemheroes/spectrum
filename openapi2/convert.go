@@ -2,11 +2,10 @@ package openapi2
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 
 	"github.com/getkin/kin-openapi/openapi2conv"
-	"gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 )
 
 func ConvertSpectrumOAS2ToKinOAS2(smSpec *Specification) (*Spec, error) {
@@ -33,11 +32,11 @@ func ConvertOAS2FileToOAS3File(oas2file, oas3file string, perm os.FileMode, pret
 		if err != nil {
 			return err
 		}
-		return ioutil.WriteFile(oas3file, bytes, perm)
+		return os.WriteFile(oas3file, bytes, perm)
 	}
 	bytes, err := oas3.MarshalJSON()
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(oas3file, bytes, perm)
+	return os.WriteFile(oas3file, bytes, perm)
 }

@@ -7,8 +7,9 @@ import (
 	"strings"
 
 	oas3 "github.com/getkin/kin-openapi/openapi3"
-	"github.com/grokify/mogo/encoding/jsonutil"
+	"github.com/grokify/mogo/encoding/jsonpointer"
 	"github.com/grokify/mogo/log/severity"
+	"github.com/grokify/mogo/path/filepathutil"
 	"github.com/grokify/mogo/text/stringcase"
 	"github.com/grokify/mogo/type/stringsutil"
 	"github.com/grokify/spectrum/openapi3"
@@ -24,6 +25,24 @@ func NewPolicy() Policy {
 	return Policy{
 		//rules:       map[string]Rule{},
 		policyRules: map[string]PolicyRule{}}
+}
+
+// NewPolicyWithConfig is useful when not programatically augmenting
+// the `PolicyConfig` struct before creating the `Policy` struct. For
+// example, `PolicyConfig.AddRuleCollection()` can be called programmtcally.
+// before calling `PolicyConfig.Policy()`.
+func NewPolicyWithConfig(policyfile string) (Policy, error) {
+	policyfile = strings.TrimSpace(policyfile)
+	if len(policyfile) == 0 {
+		return Policy{
+			//rules:       map[string]Rule{},
+			policyRules: map[string]PolicyRule{}}, nil
+	}
+	polCfg, err := NewPolicyConfigFile(policyfile)
+	if err != nil {
+		return Policy{}, err
+	}
+	return polCfg.Policy()
 }
 
 func (pol *Policy) AddRule(rule Rule, sev string, errorOnCollision bool) error {
@@ -158,7 +177,7 @@ func (pol *Policy) processRulesOperation(spec *openapi3.Spec, pointerBase, filte
 			if op == nil {
 				return
 			}
-			opPointer := jsonutil.PointerSubEscapeAll(
+			opPointer := jsonpointer.PointerSubEscapeAll(
 				"%s#/paths/%s/%s", pointerBase, path, strings.ToLower(method))
 			for _, policyRule := range pol.policyRules {
 				if !lintutil.ScopeMatch(lintutil.ScopeOperation, policyRule.Rule.Scope()) {
@@ -185,6 +204,40 @@ func (pol *Policy) processRulesOperation(spec *openapi3.Spec, pointerBase, filte
 			strings.Join(unknownSeverities, ","),
 			strings.Join(severityErrorRules, ","),
 			strings.Join(severity.Severities(), ","))
+	}
+
+	return vsets, nil
+}
+
+var ErrNoSpecFiles = errors.New("no spec files supplied")
+
+// ValidateSpecFiles executes the policy against a set of one or more spec files.
+// `sev` is the severity as specified by `github.com/grokify/mogo/log/severity`.
+// A benefit of using this over `ValidateSpec()` when validating multiple files
+// is that this will automatically inject the filename as a JSON pointer base.`
+func (pol *Policy) ValidateSpecFiles(filterSeverity string, specfiles []string) (*lintutil.PolicyViolationsSets, error) {
+	if len(specfiles) == 0 {
+		return nil, ErrNoSpecFiles
+	}
+	severityLevel, err := severity.Parse(filterSeverity)
+	if err != nil {
+		return nil, err
+	}
+
+	vsets := lintutil.NewPolicyViolationsSets()
+	for _, file := range specfiles {
+		spec, err := openapi3.ReadFile(file, false)
+		if err != nil {
+			return nil, err
+		}
+		vsetsRule, err := pol.ValidateSpec(spec, filepathutil.FilepathLeaf(file), severityLevel)
+		if err != nil {
+			return nil, err
+		}
+		err = vsets.UpsertSets(vsetsRule)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return vsets, nil

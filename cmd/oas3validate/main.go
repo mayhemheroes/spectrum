@@ -32,7 +32,7 @@ func main() {
 	if urlutil.IsHTTP(opts.SpecFileOAS3, true, true) {
 		spec, err = openapi3.ReadURL(opts.SpecFileOAS3)
 	} else {
-		spec, err = openapi3.ReadAndValidateFile(opts.SpecFileOAS3)
+		spec, err = openapi3.ReadFile(opts.SpecFileOAS3, true)
 	}
 
 	if err != nil {
@@ -62,7 +62,7 @@ func main() {
 	fmt.Println(md)
 	opts.XlsxWrite = strings.TrimSpace(opts.XlsxWrite)
 	if len(opts.XlsxWrite) > 0 {
-		err := sm.WriteFileXLSX(opts.XlsxWrite, nil, nil)
+		err := sm.WriteFileXLSX(opts.XlsxWrite, nil, nil, nil)
 		if err != nil {
 			log.Fatal(err)
 		}

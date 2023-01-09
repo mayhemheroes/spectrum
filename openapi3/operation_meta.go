@@ -1,17 +1,36 @@
 package openapi3
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
 
-	"github.com/grokify/mogo/type/stringsutil"
-
 	oas3 "github.com/getkin/kin-openapi/openapi3"
+	"github.com/grokify/mogo/net/http/pathmethod"
+	"github.com/grokify/mogo/type/stringsutil"
 )
 
-func OperationToMeta(url, method string, op *oas3.Operation) OperationMeta {
-	return OperationMeta{
+// OperationToMeta converts a path, method and operation to an `*OperationMeta`.
+// The function returns `nil` if any of the items are empty.
+func OperationToMeta(url, method string, op *oas3.Operation, inclTags []string) *OperationMeta {
+	if url == "" || method == "" || op == nil {
+		return nil
+	}
+	if len(inclTags) > 0 {
+		inclTagsMap := map[string]int{}
+		for _, inclTag := range inclTags {
+			inclTagsMap[inclTag]++
+		}
+		haveMatch := false
+		for _, opTag := range op.Tags {
+			if _, ok := inclTagsMap[opTag]; ok {
+				haveMatch = true
+				break
+			}
+		}
+		if !haveMatch {
+			return nil
+		}
+	}
+	return &OperationMeta{
 		OperationID: strings.TrimSpace(op.OperationID),
 		Summary:     strings.TrimSpace(op.Summary),
 		Method:      strings.ToUpper(strings.TrimSpace(method)),
@@ -20,19 +39,19 @@ func OperationToMeta(url, method string, op *oas3.Operation) OperationMeta {
 		MetaNotes:   []string{}}
 }
 
-// OperationMeta is used to hold additional information
-// for a spec operation.
+// OperationMeta is used to hold additional information for a spec operation.
 type OperationMeta struct {
-	OperationID      string
-	DocsDescription  string
-	DocsURL          string
-	Method           string
-	Path             string
-	SecurityScopes   []string
-	Summary          string
-	Tags             []string
-	MetaNotes        []string
-	XThrottlingGroup string
+	OperationID          string   `json:"operationID,omitempty"`
+	DocsDescription      string   `json:"docsDescription,omitempty"`
+	DocsURL              string   `json:"docsURL,omitempty"`
+	Method               string   `json:"method,omitempty"`
+	Path                 string   `json:"path,omitempty"`
+	SecurityScopes       []string `json:"securityScopes,omitempty"`
+	Summary              string   `json:"summary,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	MetaNotes            []string `json:"metaNotes,omitempty"`
+	XThrottlingGroup     string   `json:"x-throttlingGroup,omitempty"`
+	RequestBodySchemaRef string   `json:"requestBodySchemaRef,omitempty"`
 }
 
 func (om *OperationMeta) TrimSpace() {
@@ -44,6 +63,11 @@ func (om *OperationMeta) TrimSpace() {
 	om.XThrottlingGroup = strings.TrimSpace(om.XThrottlingGroup)
 }
 
+func (om *OperationMeta) PathMethod() string {
+	return pathmethod.PathMethod(om.Path, om.Method)
+}
+
+/*
 func OperationSetRequestBodySchemaRef(op *oas3.Operation, mediaType string, schemaRef *oas3.SchemaRef) {
 	if op.RequestBody == nil {
 		op.RequestBody = &oas3.RequestBodyRef{}
@@ -54,6 +78,7 @@ func OperationSetRequestBodySchemaRef(op *oas3.Operation, mediaType string, sche
 	}
 	op.RequestBody.Value.Content[mediaType] = oas3.NewMediaType().WithSchemaRef(schemaRef)
 }
+*/
 
 /*
 	op.RequestBody = &oas3.RequestBodyRef{
@@ -70,6 +95,7 @@ func OperationSetRequestBodySchemaRef(op *oas3.Operation, mediaType string, sche
 	}
 */
 
+/*
 func OperationSetResponseBodySchemaRef(op *oas3.Operation, status, description, mediaType string, schemaRef *oas3.SchemaRef) error {
 	description = strings.TrimSpace(description)
 	if len(description) == 0 {
@@ -94,59 +120,4 @@ func OperationSetResponseBodySchemaRef(op *oas3.Operation, status, description, 
 	resRef.Value.Content[mediaType] = oas3.NewMediaType().WithSchemaRef(schemaRef)
 	return nil
 }
-
-// OperationSecurityScopes retrieves a flat list of security scopes for
-// an operation.
-func OperationSecurityScopes(op *oas3.Operation, fullyQualified bool) []string {
-	securityScopes := []string{}
-	if op == nil || op.Security == nil {
-		return securityScopes
-	}
-	seqReqRaw := SecurityRequirementsToRaw(*op.Security)
-	for _, secReq := range seqReqRaw {
-		for secSchemeName, scopes := range secReq {
-			if fullyQualified {
-				secSchemeNameTrimmed := strings.TrimSpace(secSchemeName)
-				for _, scope := range scopes {
-					scope = strings.TrimSpace(scope)
-					if len(scope) > 0 {
-						securityScopes = append(securityScopes,
-							secSchemeNameTrimmed+"."+scope)
-					}
-				}
-			} else {
-				securityScopes = append(securityScopes, scopes...)
-			}
-		}
-	}
-	return stringsutil.SliceCondenseSpace(securityScopes, true, false)
-}
-
-// SecurityRequirementsToRaw returns a raw SecurityRequirements slice
-// to be used for iterating over elements.
-func SecurityRequirementsToRaw(secReqs oas3.SecurityRequirements) []map[string][]string {
-	bytes, err := json.Marshal(secReqs)
-	if err != nil {
-		panic(err)
-	}
-	raw := []map[string][]string{}
-	err = json.Unmarshal(bytes, &raw)
-	if err != nil {
-		panic(err)
-	}
-	return raw
-}
-
-// PathMethod returns a path-method string which can be used as a unique identifier for operations.
-func PathMethod(opPath, opMethod string) string {
-	opPath = strings.TrimSpace(opPath)
-	opMethod = strings.ToUpper(strings.TrimSpace(opMethod))
-	parts := []string{}
-	if len(opPath) > 0 {
-		parts = append(parts, opPath)
-	}
-	if len(opMethod) > 0 {
-		parts = append(parts, opMethod)
-	}
-	return strings.Join(parts, " ")
-}
+*/
