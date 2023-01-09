@@ -1,4 +1,4 @@
-package fuzz
+package fuzzOpenapi2
 
 import "strconv"
 import "github.com/grokify/spectrum/openapi2"

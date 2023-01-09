@@ -1,4 +1,3 @@
-# FROM fuzzers/go-fuzz:1.2.0
 FROM golang:1.18 as builder
 
 COPY . /spectrum
@@ -10,8 +9,8 @@ RUN apt update && apt install -y clang
 
 ENV GOFLAGS -mod=mod
 
-RUN go-fuzz-build -libfuzzer -o fuzz.a && \
-    clang -fsanitize=fuzzer fuzz.a -o fuzz.libfuzzer
+RUN go-fuzz-build -libfuzzer -o fuzzOpenapi2.a && \
+    clang -fsanitize=fuzzer fuzzOpenapi2.a -o fuzzOpenapi2.libfuzzer
 
 FROM debian:bookworm-slim
-COPY --from=builder /spectrum/mayhem/fuzz.libfuzzer /
+COPY --from=builder /spectrum/mayhem/fuzzOpenapi2.libfuzzer /
