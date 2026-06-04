@@ -1,15 +1,21 @@
-FROM golang:1.24 as builder
+FROM golang:1.25 as builder
 
 COPY . /spectrum
 WORKDIR /spectrum/mayhem
 
+ENV GOTOOLCHAIN=auto
 RUN go install github.com/dvyukov/go-fuzz/go-fuzz@latest github.com/dvyukov/go-fuzz/go-fuzz-build@latest
-RUN go get github.com/dvyukov/go-fuzz/go-fuzz-dep
 RUN apt update && apt install -y clang
 
-ENV GOFLAGS -mod=mod
+# Create go.mod for the fuzz package with proper dependencies
+ENV GOFLAGS=-mod=mod
+RUN go mod init fuzzOpenapi2Module && \
+    go mod edit -require github.com/grokify/spectrum@v0.0.0 && \
+    go mod edit -replace github.com/grokify/spectrum=../ && \
+    go get github.com/dvyukov/go-fuzz/go-fuzz-dep && \
+    go mod tidy
 
-RUN go-fuzz-build -libfuzzer -o fuzzOpenapi2.a && \
+RUN go-fuzz-build -libfuzzer -o fuzzOpenapi2.a . && \
     clang -fsanitize=fuzzer fuzzOpenapi2.a -o fuzzOpenapi2.libfuzzer
 
 FROM debian:bookworm-slim
